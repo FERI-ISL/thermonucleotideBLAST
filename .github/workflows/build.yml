@@ -1,0 +1,108 @@
+name: build-linux-binaries
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ubuntu-20.04
+            container: ubuntu:20.04
+            install: |
+              apt-get update
+              DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+                ca-certificates git make g++ file \
+                zlib1g-dev \
+                openmpi-bin libopenmpi-dev
+
+          - name: ubuntu-22.04
+            container: ubuntu:22.04
+            install: |
+              apt-get update
+              DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+                ca-certificates git make g++ file \
+                zlib1g-dev \
+                openmpi-bin libopenmpi-dev
+
+          - name: rocky-8
+            container: rockylinux:8
+            install: |
+              dnf -y install git make gcc-c++ file which \
+                zlib-devel \
+                openmpi openmpi-devel
+              echo "/usr/lib64/openmpi/bin" >> $GITHUB_PATH
+              echo "LD_LIBRARY_PATH=/usr/lib64/openmpi/lib:\$LD_LIBRARY_PATH" >> $GITHUB_ENV
+
+          - name: rocky-9
+            container: rockylinux:9
+            install: |
+              dnf -y install git make gcc-c++ file which \
+                zlib-devel \
+                openmpi openmpi-devel
+              echo "/usr/lib64/openmpi/bin" >> $GITHUB_PATH
+              echo "LD_LIBRARY_PATH=/usr/lib64/openmpi/lib:\$LD_LIBRARY_PATH" >> $GITHUB_ENV
+
+    container:
+      image: ${{ matrix.container }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install deps
+        run: ${{ matrix.install }}
+
+      - name: Build OpenMP + OpenMPI binaries
+        run: |
+          set -euxo pipefail
+          mkdir -p dist
+
+          make clean || true
+          make BIN=tntblast_omp OPENMP=-fopenmp
+          cp -f tntblast_omp dist/
+
+          make clean || true
+          make BIN=tntblast_mpi USE_MPI=1
+          cp -f tntblast_mpi dist/
+
+          strip dist/* || true
+          file dist/* || true
+
+      - name: Smoke test
+        run: |
+          set -euxo pipefail
+          ./dist/tntblast_omp -h || true
+          mpirun --version || true
+          mpirun -np 2 ./dist/tntblast_mpi -h || true
+
+      - name: Package
+        shell: bash
+        run: |
+            set -euxo pipefail
+            RAW_VERSION="${GITHUB_REF_NAME:-dev}"
+            # sanitize: replace slashes and spaces with hyphens
+            VERSION="$(echo "$RAW_VERSION" | tr '/ ' '--')"
+            OUT="tntblast-${VERSION}-${{ matrix.name }}-x86_64.tar.gz"
+            tar -czf "$OUT" -C dist .
+            sha256sum "$OUT" > "$OUT.sha256"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: tntblast-${{ matrix.name }}-${{ github.sha }}
+          path: |
+            *.tar.gz
+            *.sha256
