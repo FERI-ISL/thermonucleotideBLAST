@@ -1,0 +1,166 @@
+name: rebuild-linux-binaries
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: "Git ref to build (tag/branch/sha), e.g. v2.61 or v2.61.0-feri.0"
+        required: true
+        default: "v2.66"
+      release_tag:
+        description: "Tag name to attach assets to (optional). Example: v2.61.0-feri.0"
+        required: false
+        default: ""
+      publish_release:
+        description: "Publish/attach artifacts to a GitHub Release"
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ubuntu-20.04
+            container: ubuntu:20.04
+            install: |
+              apt-get update
+              DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+                ca-certificates git make g++ file zlib1g-dev \
+                openmpi-bin libopenmpi-dev
+
+          - name: ubuntu-22.04
+            container: ubuntu:22.04
+            install: |
+              apt-get update
+              DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+                ca-certificates git make g++ file zlib1g-dev \
+                openmpi-bin libopenmpi-dev
+
+          - name: rocky-8
+            container: rockylinux:8
+            install: |
+              dnf -y install git make gcc-c++ file which zlib-devel \
+                openmpi openmpi-devel
+              echo "/usr/lib64/openmpi/bin" >> $GITHUB_PATH
+              echo "LD_LIBRARY_PATH=/usr/lib64/openmpi/lib:\$LD_LIBRARY_PATH" >> $GITHUB_ENV
+
+          - name: rocky-9
+            container: rockylinux:9
+            install: |
+              dnf -y install git make gcc-c++ file which zlib-devel \
+                openmpi openmpi-devel
+              echo "/usr/lib64/openmpi/bin" >> $GITHUB_PATH
+              echo "LD_LIBRARY_PATH=/usr/lib64/openmpi/lib:\$LD_LIBRARY_PATH" >> $GITHUB_ENV
+
+    container:
+      image: ${{ matrix.container }}
+
+    steps:
+      - name: Checkout source ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+          fetch-depth: 0
+
+      - name: Install deps
+        run: ${{ matrix.install }}
+
+      - name: Compute version string
+        run: |
+          set -euo pipefail
+          if [[ -n "${{ inputs.release_tag }}" ]]; then
+            RAW="${{ inputs.release_tag }}"
+          else
+            RAW="${{ inputs.source_ref }}"
+          fi
+          # sanitize for filenames
+          VERSION="$(echo "$RAW" | sed 's#[^A-Za-z0-9._-]#-#g')"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Build OpenMP + OpenMPI binaries
+        run: |
+          set -euxo pipefail
+          mkdir -p dist
+
+          # OpenMP build (MPI OFF)
+          make clean || true
+          make BIN=tntblast_omp OPENMP=-fopenmp USE_MPI=0 BLAST_DIR=
+          cp -f tntblast_omp dist/
+
+          # MPI build
+          make clean || true
+          make BIN=tntblast_mpi USE_MPI=1 BLAST_DIR=
+          cp -f tntblast_mpi dist/
+
+          strip dist/* || true
+          file dist/* || true
+
+      - name: Smoke test
+        run: |
+          set -euxo pipefail
+          ./dist/tntblast_omp -h || true
+          mpirun --version || true
+          mpirun --allow-run-as-root -np 2 ./dist/tntblast_mpi -h || true
+
+      - name: Package
+        run: |
+          set -euxo pipefail
+          DISTRO_NORM="$(echo "${{ matrix.name }}" | sed 's/-//g')"
+          OUT="tntblast_${VERSION}_linux_${DISTRO_NORM}_x86_64.tar.gz"
+          tar -czf "$OUT" -C dist .
+          sha256sum "$OUT" > "$OUT.sha256"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: tntblast-${{ matrix.name }}-${{ env.VERSION }}
+          path: |
+            *.tar.gz
+            *.sha256
+
+  release:
+    needs: [build]
+    runs-on: ubuntu-latest
+    if: ${{ inputs.publish_release }}
+
+    steps:
+      - name: Decide tag for release
+        run: |
+          set -euo pipefail
+          TAG="${{ inputs.release_tag }}"
+          if [[ -z "$TAG" ]]; then
+            echo "release_tag is required when publish_release=true (so we know where to attach assets)."
+            exit 1
+          fi
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release_artifacts
+
+      - name: Flatten artifacts
+        run: |
+          set -euxo pipefail
+          mkdir -p out
+          find release_artifacts -type f \( -name '*.tar.gz' -o -name '*.sha256' \) -print -exec cp -v {} out/ \;
+          ls -lah out
+
+      - name: Publish GitHub Release (attach assets)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          files: out/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
