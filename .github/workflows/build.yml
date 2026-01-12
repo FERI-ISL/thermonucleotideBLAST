@@ -6,6 +6,11 @@ on:
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
+    inputs:
+      source_ref:
+        description: "Git ref to build (tag/branch/sha), e.g. v2.61 or v2.61.0-feri.0"
+        required: true
+        default: "master"
 
 permissions:
   contents: write
@@ -64,6 +69,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref || github.ref }}
+          fetch-depth: 0
 
       - name: Install deps
         run: ${{ matrix.install }}
