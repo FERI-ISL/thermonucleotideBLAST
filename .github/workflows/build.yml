@@ -85,17 +85,28 @@ jobs:
           set -euxo pipefail
           mkdir -p dist
 
-          # Force-disable optional BLAST DB mode for all builds
-          # (prevents missing seqdb.hpp on older refs / environments)
           make clean || true
           make BIN=tntblast_omp OPENMP=-fopenmp USE_MPI=0 BLAST_DIR=
-          cp -f tntblast_omp dist/
+          if [[ -f tntblast_omp ]]; then
+            cp -f tntblast_omp dist/tntblast_omp
+          elif [[ -f tntblast ]]; then
+            cp -f tntblast dist/tntblast_omp
+          else
+            echo "No expected binary produced (tntblast_omp or tntblast)"; ls -lah; exit 1
+          fi
 
           make clean || true
           make BIN=tntblast_mpi USE_MPI=1 BLAST_DIR=
-          cp -f tntblast_mpi dist/
+          if [[ -f tntblast_mpi ]]; then
+            cp -f tntblast_mpi dist/tntblast_mpi
+          elif [[ -f tntblast ]]; then
+            cp -f tntblast dist/tntblast_mpi
+          else
+            echo "No expected binary produced (tntblast_mpi or tntblast)"; ls -lah; exit 1
+          fi
 
           strip dist/* || true
+          file dist/* || true
           file dist/* || true
 
       - name: Smoke test
