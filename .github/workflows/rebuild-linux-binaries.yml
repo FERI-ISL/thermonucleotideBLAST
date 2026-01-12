@@ -93,15 +93,36 @@ jobs:
           set -euxo pipefail
           mkdir -p dist
 
-          # OpenMP build (MPI OFF)
+          # ---- OpenMP build ----
           make clean || true
-          make BIN=tntblast_omp OPENMP=-fopenmp USE_MPI=0 BLAST_DIR=
-          cp -f tntblast_omp dist/
 
-          # MPI build
+          # Try your newer contract first; if older tag ignores BIN, it will still produce ./tntblast
+          make BIN=tntblast_omp OPENMP=-fopenmp USE_MPI=0 BLAST_DIR= || make OPENMP=-fopenmp
+
+          if [ -f tntblast_omp ]; then
+            mv -f tntblast_omp dist/tntblast_omp
+          elif [ -f tntblast ]; then
+            mv -f tntblast dist/tntblast_omp
+          else
+            echo "Expected output binary not found after OpenMP build"
+            ls -la
+            exit 1
+          fi
+
+          # ---- MPI build ----
           make clean || true
-          make BIN=tntblast_mpi USE_MPI=1 BLAST_DIR=
-          cp -f tntblast_mpi dist/
+
+          make BIN=tntblast_mpi USE_MPI=1 BLAST_DIR= || make USE_MPI=1
+
+          if [ -f tntblast_mpi ]; then
+            mv -f tntblast_mpi dist/tntblast_mpi
+          elif [ -f tntblast ]; then
+            mv -f tntblast dist/tntblast_mpi
+          else
+            echo "Expected output binary not found after MPI build"
+            ls -la
+            exit 1
+          fi
 
           strip dist/* || true
           file dist/* || true
