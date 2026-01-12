@@ -66,6 +66,10 @@ jobs:
     container:
       image: ${{ matrix.container }}
 
+    env:
+      # Make workflow_dispatch artifact naming match the checked-out ref
+      BUILD_REF: ${{ inputs.source_ref || github.ref_name }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -81,12 +85,14 @@ jobs:
           set -euxo pipefail
           mkdir -p dist
 
+          # Force-disable optional BLAST DB mode for all builds
+          # (prevents missing seqdb.hpp on older refs / environments)
           make clean || true
-          make BIN=tntblast_omp OPENMP=-fopenmp
+          make BIN=tntblast_omp OPENMP=-fopenmp USE_MPI=0 BLAST_DIR=
           cp -f tntblast_omp dist/
 
           make clean || true
-          make BIN=tntblast_mpi USE_MPI=1
+          make BIN=tntblast_mpi USE_MPI=1 BLAST_DIR=
           cp -f tntblast_mpi dist/
 
           strip dist/* || true
@@ -102,7 +108,7 @@ jobs:
       - name: Package
         run: |
           set -euxo pipefail
-          RAW_VERSION="${GITHUB_REF_NAME:-dev}"
+          RAW_VERSION="${BUILD_REF:-dev}"
           VERSION="$(echo "$RAW_VERSION" | sed 's#[^A-Za-z0-9._-]#-#g')"
 
           DISTRO="${{ matrix.name }}"
@@ -111,6 +117,7 @@ jobs:
           OUT="tntblast_${VERSION}_linux_${DISTRO_NORM}_x86_64.tar.gz"
           tar -czf "$OUT" -C dist .
           sha256sum "$OUT" > "$OUT.sha256"
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -118,7 +125,7 @@ jobs:
           path: |
             *.tar.gz
             *.sha256
-    
+
   release:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [build]
@@ -131,7 +138,6 @@ jobs:
           path: release_artifacts
 
       - name: Flatten artifacts
-        shell: bash
         run: |
           set -euxo pipefail
           mkdir -p out
